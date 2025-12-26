@@ -11,9 +11,11 @@ import { MORPHO_PROGRAM_ID, getProtocolStatePDA } from '../anchor/client';
 export interface OnChainMarket {
     publicKey: PublicKey;
     account: {
-        id: number[];
+        marketId: number[];
         loanMint: PublicKey;
         collateralMint: PublicKey;
+        loanDecimals: number;
+        collateralDecimals: number;
         oracle: PublicKey;
         irm: PublicKey;
         lltv: number;
@@ -23,6 +25,8 @@ export interface OnChainMarket {
         totalBorrowAssets: bigint;
         totalBorrowShares: bigint;
         lastUpdate: bigint;
+        pendingFeeShares: bigint;
+        flashLoanLock: number;
         paused: boolean;
     };
 }
@@ -40,9 +44,14 @@ export interface OnChainPosition {
 
 export interface OnChainProtocolState {
     owner: PublicKey;
-    pendingOwner: PublicKey | null;
+    pendingOwner: PublicKey;
     feeRecipient: PublicKey;
     paused: boolean;
+    lltvCount: number;
+    enabledLltvs: number[];
+    irmCount: number;
+    enabledIrms: PublicKey[];
+    marketCount: bigint;
 }
 
 // Helper to create program instance
@@ -50,7 +59,7 @@ function createProgram(connection: Connection): Program | null {
     try {
         // Create a dummy wallet for read-only operations
         const dummyWallet = {
-            publicKey: PublicKey.default,
+            publicKey: new PublicKey('11111111111111111111111111111111'),
             signTransaction: async () => { throw new Error('Read-only'); },
             signAllTransactions: async () => { throw new Error('Read-only'); },
         };
@@ -145,7 +154,7 @@ export function useMarket(marketId: string) {
 
     const market = markets?.find((m) => {
         // Convert market ID array to hex string for comparison
-        const idHex = Buffer.from(m.account.id).toString('hex');
+        const idHex = Buffer.from(m.account.marketId).toString('hex');
         return idHex === marketId || m.publicKey.toString() === marketId;
     });
 

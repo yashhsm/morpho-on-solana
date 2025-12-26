@@ -1,0 +1,112 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+⚠ Port 3000 is in use by process 7071, using available port 3002 instead.
+▲ Next.js 16.1.1 (Turbopack)
+- Local:         http://localhost:3002
+- Network:       http://192.168.1.8:3002
+
+✓ Starting...
+✓ Ready in 1468ms
+○ Compiling / ...
+(node:19553) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ GET / 200 in 5.4s (compile: 5.2s, render: 199ms)
+ GET /flash-loans 200 in 681ms (compile: 671ms, render: 10ms)
+ GET /admin 200 in 549ms (compile: 538ms, render: 10ms)
+ GET /markets 200 in 521ms (compile: 513ms, render: 8ms)
+ GET /admin 200 in 32ms (compile: 18ms, render: 14ms)
+ GET /admin 200 in 13ms (compile: 5ms, render: 8ms)
+ GET /admin 200 in 28ms (compile: 14ms, render: 15ms)
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /admin 200 in 93ms (compile: 13ms, render: 80ms)
+ GET /admin 200 in 42ms (compile: 23ms, render: 20ms)
+ GET /markets 200 in 36ms (compile: 21ms, render: 16ms)
+ GET /admin 200 in 19ms (compile: 12ms, render: 7ms)
+ GET /admin 200 in 46ms (compile: 15ms, render: 32ms)
+✓ Compiled in 269ms
+✓ Compiled in 229ms
+✓ Compiled in 452ms
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /admin 200 in 334ms (compile: 81ms, render: 253ms)
+ GET /admin 200 in 69ms (compile: 17ms, render: 52ms)
+✓ Compiled in 298ms
+✓ Compiled in 306ms
+✓ Compiled in 345ms
+✓ Compiled in 90ms
+ GET /admin 200 in 160ms (compile: 128ms, render: 32ms)
+ GET /admin 200 in 22ms (compile: 13ms, render: 9ms)
+ GET /markets 200 in 253ms (compile: 224ms, render: 29ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 814ms (compile: 805ms, render: 9ms)
+ GET /markets 200 in 223ms (compile: 35ms, render: 188ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 36ms (compile: 22ms, render: 13ms)
+ GET /admin 200 in 34ms (compile: 18ms, render: 16ms)
+ GET /markets 200 in 57ms (compile: 19ms, render: 39ms)
+ GET /dashboard 200 in 467ms (compile: 458ms, render: 9ms)
+ GET /admin 200 in 37ms (compile: 19ms, render: 17ms)
+ GET /dashboard 200 in 38ms (compile: 29ms, render: 10ms)
+ GET /markets 200 in 27ms (compile: 16ms, render: 11ms)
+ GET /admin 200 in 31ms (compile: 20ms, render: 11ms)
+ GET /flash-loans 200 in 161ms (compile: 150ms, render: 11ms)
+ GET /admin 200 in 47ms (compile: 19ms, render: 28ms)
+ GET /flash-loans 200 in 32ms (compile: 18ms, render: 15ms)
+ GET /admin 200 in 29ms (compile: 16ms, render: 13ms)
+ GET /markets 200 in 32ms (compile: 17ms, render: 14ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 42ms (compile: 27ms, render: 15ms)
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 124ms (compile: 25ms, render: 99ms)
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+✓ Compiled in 279ms
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 266ms (compile: 62ms, render: 204ms)
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+✓ Compiled in 285ms
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 246ms (compile: 69ms, render: 177ms)
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+✓ Compiled in 224ms
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 81ms (compile: 37ms, render: 44ms)
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+✓ Compiled in 189ms
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /admin 200 in 336ms (compile: 49ms, render: 287ms)
+ GET /admin 200 in 67ms (compile: 13ms, render: 53ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 275ms (compile: 42ms, render: 233ms)
+ GET /admin 200 in 47ms (compile: 4ms, render: 43ms)
+ GET /admin 200 in 27ms (compile: 10ms, render: 17ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 72ms (compile: 35ms, render: 37ms)
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+✓ Compiled in 259ms
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 295ms (compile: 91ms, render: 204ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 62ms (compile: 22ms, render: 40ms)
+✓ Compiled in 264ms
+✓ Compiled in 384ms
+ GET /dashboard 200 in 215ms (compile: 184ms, render: 32ms)
+ GET /markets 200 in 97ms (compile: 80ms, render: 16ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 74ms (compile: 62ms, render: 13ms)
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 251ms (compile: 27ms, render: 224ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 86ms (compile: 27ms, render: 60ms)
+✓ Compiled in 175ms
+✓ Compiled in 390ms
+✓ Compiled in 390ms
+ GET /admin 200 in 195ms (compile: 172ms, render: 23ms)
+ GET /markets 200 in 50ms (compile: 26ms, render: 24ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 87ms (compile: 73ms, render: 14ms)
+ GET /markets 200 in 58ms (compile: 33ms, render: 24ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 47ms (compile: 23ms, render: 24ms)
+✓ Compiled in 73ms
+✓ Compiled in 80ms
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 319ms (compile: 77ms, render: 242ms)
+ GET /admin 200 in 112ms (compile: 92ms, render: 19ms)
+ GET /dashboard 200 in 172ms (compile: 153ms, render: 18ms)
+ GET /markets 200 in 26ms (compile: 16ms, render: 10ms)
+ GET /markets 200 in 225ms (compile: 18ms, render: 207ms)
+ GET /markets/KqCdfu3Ap5SPLyTTspz8waxFfukqMWRRWDyhCGpRUd3 200 in 38ms (compile: 23ms, render: 16ms)
+ GET /markets/7byAqBxyFpYHEVc8F9vFXgd5dC16cjAg15LRsUQDmAey 200 in 31ms (compile: 17ms, render: 14ms)
+ GET /markets/KqCdfu3Ap5SPLyTTspz8waxFfukqMWRRWDyhCGpRUd3 200 in 35ms (compile: 17ms, render: 18ms)

@@ -9,8 +9,14 @@ export const MORPHO_PROGRAM_ID = new PublicKey(
     '9qYe29CskmZ1mcuLLFcQXovfbqXBqLsXpg4y7Rfk9NsE'
 );
 
-// Seed constants
-export const PROGRAM_SEED = Buffer.from('morpho');
+// Seed constants (must match on-chain program constants)
+export const PROGRAM_SEED_PREFIX = Buffer.from('morpho_v1');
+export const PROTOCOL_STATE_SEED = Buffer.from('morpho_protocol');
+export const MARKET_SEED = Buffer.from('morpho_market');
+export const POSITION_SEED = Buffer.from('morpho_position');
+export const LOAN_VAULT_SEED = Buffer.from('morpho_loan_vault');
+export const COLLATERAL_VAULT_SEED = Buffer.from('morpho_collateral_vault');
+export const AUTHORIZATION_SEED = Buffer.from('morpho_authorization');
 
 export function getMorphoProgram(
     connection: Connection,
@@ -26,14 +32,14 @@ export function getMorphoProgram(
 // PDA Derivation Helpers
 export function getProtocolStatePDA(): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
-        [PROGRAM_SEED, Buffer.from('protocol_state')],
+        [PROGRAM_SEED_PREFIX, PROTOCOL_STATE_SEED],
         MORPHO_PROGRAM_ID
     );
 }
 
 export function getMarketPDA(marketId: Buffer): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
-        [PROGRAM_SEED, Buffer.from('market'), marketId],
+        [PROGRAM_SEED_PREFIX, MARKET_SEED, marketId],
         MORPHO_PROGRAM_ID
     );
 }
@@ -43,21 +49,21 @@ export function getPositionPDA(
     owner: PublicKey
 ): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
-        [PROGRAM_SEED, Buffer.from('position'), marketId, owner.toBuffer()],
+        [PROGRAM_SEED_PREFIX, POSITION_SEED, marketId, owner.toBuffer()],
         MORPHO_PROGRAM_ID
     );
 }
 
 export function getLoanVaultPDA(marketId: Buffer): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
-        [PROGRAM_SEED, Buffer.from('loan_vault'), marketId],
+        [PROGRAM_SEED_PREFIX, LOAN_VAULT_SEED, marketId],
         MORPHO_PROGRAM_ID
     );
 }
 
 export function getCollateralVaultPDA(marketId: Buffer): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
-        [PROGRAM_SEED, Buffer.from('collateral_vault'), marketId],
+        [PROGRAM_SEED_PREFIX, COLLATERAL_VAULT_SEED, marketId],
         MORPHO_PROGRAM_ID
     );
 }
@@ -68,8 +74,8 @@ export function getAuthorizationPDA(
 ): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
         [
-            PROGRAM_SEED,
-            Buffer.from('authorization'),
+            PROGRAM_SEED_PREFIX,
+            AUTHORIZATION_SEED,
             authorizer.toBuffer(),
             authorized.toBuffer(),
         ],
@@ -85,8 +91,7 @@ export function calculateMarketId(
     irm: PublicKey,
     lltv: number
 ): Buffer {
-    const lltvBuffer = Buffer.alloc(8);
-    lltvBuffer.writeBigUInt64LE(BigInt(lltv));
+    const lltvBuffer = new BN(lltv).toArrayLike(Buffer, 'le', 8);
 
     const data = Buffer.concat([
         collateralMint.toBuffer(),

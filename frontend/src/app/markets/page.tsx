@@ -62,8 +62,14 @@ export default function MarketsPage() {
     const { data: markets, isLoading, error } = useMarkets();
 
     // Calculate stats from real data
-    const totalTVL = markets?.reduce((acc, m) => acc + Number(m.account.totalSupplyAssets) / 1e6, 0) || 0;
-    const totalBorrowed = markets?.reduce((acc, m) => acc + Number(m.account.totalBorrowAssets) / 1e6, 0) || 0;
+    const totalTVL = markets?.reduce((acc, m) => {
+        const scale = Math.pow(10, m.account.loanDecimals);
+        return acc + Number(m.account.totalSupplyAssets) / scale;
+    }, 0) || 0;
+    const totalBorrowed = markets?.reduce((acc, m) => {
+        const scale = Math.pow(10, m.account.loanDecimals);
+        return acc + Number(m.account.totalBorrowAssets) / scale;
+    }, 0) || 0;
     const activeMarkets = markets?.filter(m => !m.account.paused).length || 0;
 
     return (
@@ -154,8 +160,9 @@ export default function MarketsPage() {
                     </>
                 ) : markets && markets.length > 0 ? (
                     markets.map((market) => {
-                        const totalSupply = Number(market.account.totalSupplyAssets) / 1e6;
-                        const totalBorrow = Number(market.account.totalBorrowAssets) / 1e6;
+                        const scale = Math.pow(10, market.account.loanDecimals);
+                        const totalSupply = Number(market.account.totalSupplyAssets) / scale;
+                        const totalBorrow = Number(market.account.totalBorrowAssets) / scale;
                         const utilization = totalSupply > 0 ? (totalBorrow / totalSupply) * 100 : 0;
                         const lltv = market.account.lltv / 100;
 

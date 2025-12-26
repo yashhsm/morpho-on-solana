@@ -3,12 +3,18 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAnchorWallet, useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { useUserPositions, useMarkets } from '@/lib/hooks/useOnChainData';
 import Link from 'next/link';
+import { useState } from 'react';
+import { PublicKey, SystemProgram } from '@solana/web3.js';
+import { toast } from 'sonner';
+import { getAuthorizationPDA, getMorphoProgram } from '@/lib/anchor/client';
+import { parseIntegerAmount } from '@/lib/anchor/transactions';
 import {
     Wallet,
     TrendingUp,
@@ -16,7 +22,6 @@ import {
     Shield,
     DollarSign,
     ArrowRight,
-    AlertCircle,
 } from 'lucide-react';
 
 function PositionsSkeleton() {
@@ -60,8 +65,103 @@ function EmptyPositionsState() {
 
 export default function DashboardPage() {
     const { connected, publicKey } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
     const { data: positions, isLoading: positionsLoading } = useUserPositions();
     const { data: markets } = useMarkets();
+    const [pendingClose, setPendingClose] = useState<string | null>(null);
+    const [authorizedAddress, setAuthorizedAddress] = useState('');
+    const [authorizationExpiry, setAuthorizationExpiry] = useState('');
+    const [authorizationEnabled, setAuthorizationEnabled] = useState(true);
+    const [pendingAuthorization, setPendingAuthorization] = useState<string | null>(null);
+
+    const handleClosePosition = async (positionKey: string, marketId: number[]) => {
+        if (!wallet || !publicKey) return;
+        setPendingClose(positionKey);
+        const toastId = toast.loading('Closing position...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const signature = await program.methods
+                .closePosition(marketId)
+                .accounts({
+                    owner: wallet.publicKey,
+                    rentReceiver: wallet.publicKey,
+                    position: new PublicKey(positionKey),
+                })
+                .rpc();
+
+            toast.success('Position closed', { id: toastId, description: signature });
+        } catch (error) {
+            toast.error('Close position failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setPendingClose(null);
+        }
+    };
+
+    const handleSetAuthorization = async () => {
+        if (!wallet || !publicKey || !authorizedAddress) return;
+        setPendingAuthorization('set');
+        const toastId = toast.loading('Setting authorization...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const authorized = new PublicKey(authorizedAddress.trim());
+            const [authorizationPda] = getAuthorizationPDA(wallet.publicKey, authorized);
+            const expiresAt = authorizationExpiry ? parseIntegerAmount(authorizationExpiry.trim()) : parseIntegerAmount('0');
+
+            const signature = await program.methods
+                .setAuthorization(authorizationEnabled, expiresAt)
+                .accounts({
+                    authorizer: wallet.publicKey,
+                    authorized,
+                    authorization: authorizationPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            toast.success('Authorization updated', { id: toastId, description: signature });
+        } catch (error) {
+            toast.error('Authorization failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setPendingAuthorization(null);
+        }
+    };
+
+    const handleRevokeAuthorization = async () => {
+        if (!wallet || !publicKey || !authorizedAddress) return;
+        setPendingAuthorization('revoke');
+        const toastId = toast.loading('Revoking authorization...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const authorized = new PublicKey(authorizedAddress.trim());
+            const [authorizationPda] = getAuthorizationPDA(wallet.publicKey, authorized);
+
+            const signature = await program.methods
+                .revokeAuthorization()
+                .accounts({
+                    authorizer: wallet.publicKey,
+                    authorization: authorizationPda,
+                })
+                .rpc();
+
+            toast.success('Authorization revoked', { id: toastId, description: signature });
+        } catch (error) {
+            toast.error('Revoke failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setPendingAuthorization(null);
+        }
+    };
 
     if (!connected) {
         return (
@@ -189,7 +289,7 @@ export default function DashboardPage() {
                                     <TableHead>Supply Shares</TableHead>
                                     <TableHead>Collateral</TableHead>
                                     <TableHead>Borrow Shares</TableHead>
-                                    <TableHead></TableHead>
+                                    <TableHead>Actions</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -197,7 +297,7 @@ export default function DashboardPage() {
                                     // Find matching market
                                     const market = markets?.find(m => {
                                         const posIdHex = Buffer.from(position.account.marketId).toString('hex');
-                                        const marketIdHex = Buffer.from(m.account.id).toString('hex');
+                                        const marketIdHex = Buffer.from(m.account.marketId).toString('hex');
                                         return posIdHex === marketIdHex;
                                     });
 
@@ -216,14 +316,34 @@ export default function DashboardPage() {
                                                 {(Number(position.account.borrowShares) / 1e9).toFixed(4)}
                                             </TableCell>
                                             <TableCell>
-                                                {market && (
-                                                    <Button variant="ghost" size="sm" asChild>
-                                                        <Link href={`/markets/${market.publicKey.toString()}`}>
-                                                            Manage
-                                                            <ArrowRight className="w-4 h-4 ml-2" />
-                                                        </Link>
+                                                <div className="flex gap-2">
+                                                    {market && (
+                                                        <Button variant="ghost" size="sm" asChild>
+                                                            <Link href={`/markets/${market.publicKey.toString()}`}>
+                                                                Manage
+                                                                <ArrowRight className="w-4 h-4 ml-2" />
+                                                            </Link>
+                                                        </Button>
+                                                    )}
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        disabled={
+                                                            pendingClose === position.publicKey.toString() ||
+                                                            Number(position.account.supplyShares) > 0 ||
+                                                            Number(position.account.borrowShares) > 0 ||
+                                                            Number(position.account.collateral) > 0
+                                                        }
+                                                        onClick={() =>
+                                                            handleClosePosition(
+                                                                position.publicKey.toString(),
+                                                                position.account.marketId
+                                                            )
+                                                        }
+                                                    >
+                                                        {pendingClose === position.publicKey.toString() ? 'Closing...' : 'Close'}
                                                     </Button>
-                                                )}
+                                                </div>
                                             </TableCell>
                                         </TableRow>
                                     );
@@ -235,6 +355,63 @@ export default function DashboardPage() {
             ) : (
                 <EmptyPositionsState />
             )}
+
+            <Card className="mt-8">
+                <CardHeader>
+                    <CardTitle>Delegated Authorization</CardTitle>
+                    <CardDescription>
+                        Allow another wallet to manage your positions with set_authorization() / revoke_authorization().
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div>
+                        <label className="text-sm font-medium">Authorized Wallet</label>
+                        <Input
+                            value={authorizedAddress}
+                            onChange={(e) => setAuthorizedAddress(e.target.value)}
+                            placeholder="Wallet address to authorize"
+                            className="mt-1"
+                        />
+                    </div>
+                    <div className="grid md:grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-sm font-medium">Expires At (Unix Timestamp)</label>
+                            <Input
+                                value={authorizationExpiry}
+                                onChange={(e) => setAuthorizationExpiry(e.target.value)}
+                                placeholder="0 for no expiry"
+                                className="mt-1"
+                            />
+                        </div>
+                        <div className="flex items-center gap-2 pt-6">
+                            <input
+                                id="auth-enabled"
+                                type="checkbox"
+                                checked={authorizationEnabled}
+                                onChange={(e) => setAuthorizationEnabled(e.target.checked)}
+                            />
+                            <label htmlFor="auth-enabled" className="text-sm font-medium">
+                                Enable Authorization
+                            </label>
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <Button
+                            onClick={handleSetAuthorization}
+                            disabled={!authorizedAddress || pendingAuthorization === 'set'}
+                        >
+                            {pendingAuthorization === 'set' ? 'Saving...' : 'Set Authorization'}
+                        </Button>
+                        <Button
+                            variant="outline"
+                            onClick={handleRevokeAuthorization}
+                            disabled={!authorizedAddress || pendingAuthorization === 'revoke'}
+                        >
+                            {pendingAuthorization === 'revoke' ? 'Revoking...' : 'Revoke Authorization'}
+                        </Button>
+                    </div>
+                </CardContent>
+            </Card>
         </div>
     );
 }
