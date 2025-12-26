@@ -148,16 +148,10 @@ pub fn get_oracle_price_validated(
     
     // Try to parse as Switchboard PullFeed first (accounts are fairly large ~3KB)
     if data_len >= 1000 {
-        if let Ok(feed) = PullFeedAccountData::parse(data) {
-            // Use very lenient staleness for basic lookup without Clock
-            // For production, use get_switchboard_price_validated with Clock
-            if let Ok(price_decimal) = feed.get_value(0, u64::MAX, 1, true) {
-                if let Ok(price) = decimal_to_oracle_scale(&price_decimal) {
-                    if price >= MIN_ORACLE_PRICE && price <= max_oracle_price() {
-                        return Ok(price);
-                    }
-                }
-            }
+        // Use slot-aware validation to avoid Switchboard underflow panics.
+        let clock = Clock::get()?;
+        if let Ok(price) = get_switchboard_price_validated(oracle_account, market, &clock) {
+            return Ok(price);
         }
         // If Switchboard parsing fails, try static oracle
         // Need to re-borrow data

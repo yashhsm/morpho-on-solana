@@ -7,10 +7,13 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAnchorWallet, useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { useMarkets } from '@/lib/hooks/useOnChainData';
 import { useState } from 'react';
+import { toast } from 'sonner';
+import { getMorphoProgram, getLoanVaultPDA, getProtocolStatePDA } from '@/lib/anchor/client';
+import { getOrCreateAtaIx, parseTokenAmount, sendInstructions } from '@/lib/anchor/transactions';
 import {
     Zap,
     AlertTriangle,
@@ -41,16 +44,125 @@ function EmptyMarketsAlert() {
 
 export default function FlashLoansPage() {
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
     const { data: markets, isLoading } = useMarkets();
     const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
     const [amount, setAmount] = useState('');
     const [mode, setMode] = useState<'single' | 'start-end'>('single');
+    const [submitting, setSubmitting] = useState(false);
 
     // Get selected market
     const selectedMarket = markets?.find(m => m.publicKey.toString() === selectedMarketId);
+    const loanScale = selectedMarket ? Math.pow(10, selectedMarket.account.loanDecimals) : 1;
     const availableLiquidity = selectedMarket
-        ? (Number(selectedMarket.account.totalSupplyAssets) - Number(selectedMarket.account.totalBorrowAssets)) / 1e6
+        ? (Number(selectedMarket.account.totalSupplyAssets) - Number(selectedMarket.account.totalBorrowAssets)) / loanScale
         : 0;
+
+    const executeFlashLoan = async (type: 'single' | 'start' | 'end') => {
+        if (!wallet || !selectedMarket) return;
+        if (!amount) return;
+
+        setSubmitting(true);
+        const toastId = toast.loading(
+            type === 'single'
+                ? 'Submitting flash loan...'
+                : type === 'start'
+                ? 'Starting flash loan...'
+                : 'Ending flash loan...'
+        );
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketIdBuffer = Buffer.from(selectedMarket.account.marketId);
+            const marketIdArray = Array.from(marketIdBuffer);
+            const [protocolState] = getProtocolStatePDA();
+            const [loanVault] = getLoanVaultPDA(marketIdBuffer);
+
+            const { address: borrowerTokenAccount, tokenProgramId, instruction: ataIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: selectedMarket.account.loanMint,
+                });
+
+            const amountBn = parseTokenAmount(amount, selectedMarket.account.loanDecimals);
+
+            if (type === 'single') {
+                const flashIx = await program.methods
+                    .flashLoan(marketIdArray, amountBn)
+                    .accounts({
+                        borrower: wallet.publicKey,
+                        protocolState,
+                        market: selectedMarket.publicKey,
+                        borrowerTokenAccount,
+                        loanVault,
+                        loanMint: selectedMarket.account.loanMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, flashIx],
+                });
+
+                toast.success('Flash loan submitted', { id: toastId, description: signature });
+            } else if (type === 'start') {
+                const startIx = await program.methods
+                    .flashLoanStart(marketIdArray, amountBn)
+                    .accounts({
+                        borrower: wallet.publicKey,
+                        protocolState,
+                        market: selectedMarket.publicKey,
+                        borrowerTokenAccount,
+                        loanVault,
+                        loanMint: selectedMarket.account.loanMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, startIx],
+                });
+
+                toast.success('Flash loan started', { id: toastId, description: signature });
+            } else {
+                const endIx = await program.methods
+                    .flashLoanEnd(marketIdArray, amountBn)
+                    .accounts({
+                        borrower: wallet.publicKey,
+                        market: selectedMarket.publicKey,
+                        borrowerTokenAccount,
+                        loanVault,
+                        loanMint: selectedMarket.account.loanMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, endIx],
+                });
+
+                toast.success('Flash loan ended', { id: toastId, description: signature });
+            }
+
+            setAmount('');
+        } catch (error) {
+            toast.error('Flash loan failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
 
     if (!connected) {
         return (
@@ -209,10 +321,45 @@ export default function FlashLoansPage() {
                             </AlertDescription>
                         </Alert>
 
-                        <Button className="w-full" disabled={!amount || !selectedMarket}>
-                            <Zap className="w-4 h-4 mr-2" />
-                            {mode === 'single' ? 'Execute Flash Loan' : 'Start Flash Loan'}
-                        </Button>
+                        {mode === 'single' ? (
+                            <Button
+                                className="w-full"
+                                disabled={!amount || !selectedMarket || submitting}
+                                onClick={() => executeFlashLoan('single')}
+                            >
+                                <Zap className="w-4 h-4 mr-2" />
+                                {submitting ? 'Submitting...' : 'Execute Flash Loan'}
+                            </Button>
+                        ) : (
+                            <div className="grid gap-2">
+                                <Button
+                                    className="w-full"
+                                    disabled={!amount || !selectedMarket || submitting}
+                                    onClick={() => executeFlashLoan('start')}
+                                >
+                                    <Zap className="w-4 h-4 mr-2" />
+                                    {submitting ? 'Submitting...' : 'Start Flash Loan'}
+                                </Button>
+                                <Button
+                                    className="w-full"
+                                    variant="outline"
+                                    disabled={
+                                        !amount ||
+                                        !selectedMarket ||
+                                        submitting ||
+                                        (selectedMarket?.account.flashLoanLock ?? 0) === 0
+                                    }
+                                    onClick={() => executeFlashLoan('end')}
+                                >
+                                    <Zap className="w-4 h-4 mr-2" />
+                                    {(selectedMarket?.account.flashLoanLock ?? 0) === 0
+                                        ? 'End Flash Loan (Start First)'
+                                        : submitting
+                                            ? 'Submitting...'
+                                            : 'End Flash Loan'}
+                                </Button>
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
 

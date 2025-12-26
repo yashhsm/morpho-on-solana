@@ -28,7 +28,10 @@ export default function HomePage() {
   const { data: markets, isLoading } = useMarkets();
 
   // Calculate real stats
-  const totalTVL = markets?.reduce((acc, m) => acc + Number(m.account.totalSupplyAssets) / 1e6, 0) || 0;
+  const totalTVL = markets?.reduce((acc, m) => {
+    const scale = Math.pow(10, m.account.loanDecimals);
+    return acc + Number(m.account.totalSupplyAssets) / scale;
+  }, 0) || 0;
   const activeMarkets = markets?.filter(m => !m.account.paused).length || 0;
 
   return (

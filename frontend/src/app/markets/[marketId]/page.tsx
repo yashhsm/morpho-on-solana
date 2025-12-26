@@ -9,14 +9,32 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { useAnchorWallet, useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { useMarkets, useUserPositions } from '@/lib/hooks/useOnChainData';
 import { PublicKey } from '@solana/web3.js';
+import { NATIVE_MINT } from '@solana/spl-token';
+import { toast } from 'sonner';
+import {
+    getCollateralVaultPDA,
+    getLoanVaultPDA,
+    getPositionPDA,
+    getProtocolStatePDA,
+    getMorphoProgram,
+} from '@/lib/anchor/client';
+import {
+    buildWrapSolInstructions,
+    ensurePositionIx,
+    getOrCreateAtaIx,
+    parseIntegerAmount,
+    parseTokenAmount,
+    sendInstructions,
+} from '@/lib/anchor/transactions';
 import {
     TrendingUp,
     TrendingDown,
     Shield,
+    RefreshCcw,
     Zap,
     DollarSign,
     AlertTriangle,
@@ -31,6 +49,11 @@ function formatNumber(num: number): string {
     if (num >= 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
     if (num >= 1_000) return `$${(num / 1_000).toFixed(2)}K`;
     return `$${num.toFixed(2)}`;
+}
+
+function formatMintShort(mint: PublicKey): string {
+    const value = mint.toString();
+    return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function HealthFactorBar({ healthFactor }: { healthFactor: number }) {
@@ -91,12 +114,141 @@ function MarketNotFound() {
     );
 }
 
-function SupplyTab({ market }: { market: { lltv: number; totalSupplyAssets: bigint } }) {
+function SupplyTab({
+    market,
+    marketId,
+    marketKey,
+    positionExists,
+}: {
+    market: {
+        totalSupplyAssets: bigint;
+        loanMint: PublicKey;
+        loanDecimals: number;
+    };
+    marketId: Buffer;
+    marketKey: PublicKey;
+    positionExists: boolean;
+}) {
     const [amount, setAmount] = useState('');
-    const { connected, publicKey } = useWallet();
+    const [submitting, setSubmitting] = useState(false);
+    const [wrapping, setWrapping] = useState(false);
+    const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
+    const isNativeLoan = market.loanMint.equals(NATIVE_MINT);
 
-    const handleSupply = () => {
-        alert(`Supply ${amount} - Transaction pending...`);
+    const handleSupply = async () => {
+        if (!wallet) return;
+        if (!amount) return;
+        setSubmitting(true);
+        const toastId = toast.loading('Submitting supply...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketIdArray = Array.from(marketId);
+            const [protocolState] = getProtocolStatePDA();
+            const [loanVault] = getLoanVaultPDA(marketId);
+
+            const { address: supplierTokenAccount, tokenProgramId, instruction: ataIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: market.loanMint,
+                });
+
+            const { positionPda, instruction: positionIx } = await ensurePositionIx({
+                connection,
+                program,
+                marketId,
+                market: marketKey,
+                owner: wallet.publicKey,
+                payer: wallet.publicKey,
+            });
+
+            const assets = parseTokenAmount(amount, market.loanDecimals);
+            const minShares = parseIntegerAmount('0');
+
+            const supplyIx = await program.methods
+                .supply(marketIdArray, assets, minShares)
+                .accounts({
+                    supplier: wallet.publicKey,
+                    protocolState,
+                    market: marketKey,
+                    position: positionPda,
+                    onBehalfOf: wallet.publicKey,
+                    supplierTokenAccount,
+                    loanVault,
+                    loanMint: market.loanMint,
+                    tokenProgram: tokenProgramId,
+                })
+                .instruction();
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions: [ataIx, positionIx, supplyIx],
+            });
+
+            toast.success('Supply submitted', {
+                id: toastId,
+                description: signature,
+            });
+            setAmount('');
+        } catch (error) {
+            toast.error('Supply failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const handleWrapSol = async () => {
+        if (!wallet) return;
+        if (!amount) {
+            toast.error('Enter an amount to wrap');
+            return;
+        }
+
+        setWrapping(true);
+        const toastId = toast.loading('Wrapping SOL...');
+
+        try {
+            const lamportsBn = parseTokenAmount(amount, market.loanDecimals);
+            let lamports: number;
+            try {
+                lamports = lamportsBn.toNumber();
+            } catch {
+                throw new Error('Amount too large');
+            }
+
+            const { instructions } = await buildWrapSolInstructions({
+                connection,
+                payer: wallet.publicKey,
+                owner: wallet.publicKey,
+                amountLamports: lamports,
+            });
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions,
+            });
+
+            toast.success('SOL wrapped', {
+                id: toastId,
+                description: signature,
+            });
+        } catch (error) {
+            toast.error('Wrap failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setWrapping(false);
+        }
     };
 
     if (!connected) {
@@ -116,12 +268,35 @@ function SupplyTab({ market }: { market: { lltv: number; totalSupplyAssets: bigi
                 <AlertDescription>Supply loan tokens to earn interest. Shares calculated with DOWN rounding.</AlertDescription>
             </Alert>
 
+            {!positionExists && (
+                <Alert>
+                    <AlertTitle>Position Auto-Creation</AlertTitle>
+                    <AlertDescription>
+                        No position found for this market. A position will be created automatically on first supply.
+                    </AlertDescription>
+                </Alert>
+            )}
+
             <div>
                 <label className="text-sm font-medium">Amount to Supply</label>
+                <div className="text-xs text-muted-foreground mt-1">
+                    Loan asset: <span className="font-mono">{formatMintShort(market.loanMint)}</span>
+                </div>
                 <div className="flex gap-2 mt-1">
                     <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
                     <Button variant="outline" onClick={() => setAmount('1000')}>MAX</Button>
                 </div>
+                {isNativeLoan && (
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                        <Button variant="outline" onClick={handleWrapSol} disabled={!amount || wrapping}>
+                            <RefreshCcw className="w-4 h-4 mr-2" />
+                            {wrapping ? 'Wrapping...' : 'Wrap SOL'}
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                            Converts native SOL to wSOL for this amount.
+                        </span>
+                    </div>
+                )}
                 <div className="text-xs text-muted-foreground mt-1">Check your wallet for balance</div>
             </div>
 
@@ -130,7 +305,7 @@ function SupplyTab({ market }: { market: { lltv: number; totalSupplyAssets: bigi
                     <div className="space-y-2 text-sm">
                         <div className="flex justify-between">
                             <span>Current Market Supply</span>
-                            <span className="font-mono">{formatNumber(Number(market.totalSupplyAssets) / 1e6)}</span>
+                            <span className="font-mono">{formatNumber(Number(market.totalSupplyAssets) / Math.pow(10, market.loanDecimals))}</span>
                         </div>
                         <div className="flex justify-between">
                             <span>Your Supply</span>
@@ -140,18 +315,103 @@ function SupplyTab({ market }: { market: { lltv: number; totalSupplyAssets: bigi
                 </CardContent>
             </Card>
 
-            <Button onClick={handleSupply} className="w-full" disabled={!amount}>
+            <Button onClick={handleSupply} className="w-full" disabled={!amount || submitting}>
                 <DollarSign className="w-4 h-4 mr-2" />
-                Supply
+                {submitting ? 'Supplying...' : 'Supply'}
             </Button>
         </div>
     );
 }
 
-function WithdrawTab() {
+function WithdrawTab({
+    market,
+    marketId,
+    marketKey,
+    positionExists,
+}: {
+    market: {
+        loanMint: PublicKey;
+        loanDecimals: number;
+    };
+    marketId: Buffer;
+    marketKey: PublicKey;
+    positionExists: boolean;
+}) {
     const [mode, setMode] = useState<'assets' | 'shares'>('assets');
     const [amount, setAmount] = useState('');
+    const [submitting, setSubmitting] = useState(false);
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
+
+    const handleWithdraw = async () => {
+        if (!wallet) return;
+        if (!amount) return;
+        if (!positionExists) {
+            toast.error('No position found for this market');
+            return;
+        }
+
+        setSubmitting(true);
+        const toastId = toast.loading('Submitting withdraw...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketIdArray = Array.from(marketId);
+            const [protocolState] = getProtocolStatePDA();
+            const [loanVault] = getLoanVaultPDA(marketId);
+            const [positionPda] = getPositionPDA(marketId, wallet.publicKey);
+
+            const { address: receiverTokenAccount, tokenProgramId, instruction: ataIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: market.loanMint,
+                });
+
+            const assets = mode === 'assets'
+                ? parseTokenAmount(amount, market.loanDecimals)
+                : parseIntegerAmount('0');
+            const shares = mode === 'shares'
+                ? parseIntegerAmount(amount)
+                : parseIntegerAmount('0');
+
+            const withdrawIx = await program.methods
+                .withdraw(marketIdArray, assets, shares)
+                .accounts({
+                    caller: wallet.publicKey,
+                    protocolState,
+                    market: marketKey,
+                    position: positionPda,
+                    authorization: null,
+                    receiverTokenAccount,
+                    loanVault,
+                    loanMint: market.loanMint,
+                    tokenProgram: tokenProgramId,
+                })
+                .instruction();
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions: [ataIx, withdrawIx],
+            });
+
+            toast.success('Withdraw submitted', {
+                id: toastId,
+                description: signature,
+            });
+            setAmount('');
+        } catch (error) {
+            toast.error('Withdraw failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
 
     if (!connected) {
         return (
@@ -177,25 +437,201 @@ function WithdrawTab() {
 
             <div>
                 <label className="text-sm font-medium">{mode === 'assets' ? 'Amount to Withdraw' : 'Shares to Burn'}</label>
+                <div className="text-xs text-muted-foreground mt-1">
+                    Loan asset: <span className="font-mono">{formatMintShort(market.loanMint)}</span>
+                </div>
                 <div className="flex gap-2 mt-1">
                     <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
                     <Button variant="outline">MAX</Button>
                 </div>
-                <div className="text-xs text-muted-foreground mt-1">Your supply position will be shown here</div>
+                {!positionExists && (
+                    <div className="text-xs text-orange-600 mt-1">Create a position before withdrawing</div>
+                )}
             </div>
 
-            <Button onClick={() => alert('Withdraw pending...')} className="w-full" variant="outline" disabled={!amount}>
+            <Button onClick={handleWithdraw} className="w-full" variant="outline" disabled={!amount || submitting || !positionExists}>
                 <TrendingDown className="w-4 h-4 mr-2" />
-                Withdraw
+                {submitting ? 'Withdrawing...' : 'Withdraw'}
             </Button>
         </div>
     );
 }
 
-function CollateralTab() {
+function CollateralTab({
+    market,
+    marketId,
+    marketKey,
+    positionExists,
+}: {
+    market: {
+        collateralMint: PublicKey;
+        collateralDecimals: number;
+        oracle: PublicKey;
+    };
+    marketId: Buffer;
+    marketKey: PublicKey;
+    positionExists: boolean;
+}) {
     const [action, setAction] = useState<'deposit' | 'withdraw'>('deposit');
     const [amount, setAmount] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [wrapping, setWrapping] = useState(false);
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
+    const isNativeCollateral = market.collateralMint.equals(NATIVE_MINT);
+
+    const handleCollateral = async () => {
+        if (!wallet) return;
+        if (!amount) return;
+
+        if (!positionExists && action === 'withdraw') {
+            toast.error('No position found for this market');
+            return;
+        }
+
+        setSubmitting(true);
+        const toastId = toast.loading(
+            action === 'deposit' ? 'Depositing collateral...' : 'Withdrawing collateral...'
+        );
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketIdArray = Array.from(marketId);
+            const [protocolState] = getProtocolStatePDA();
+            const [collateralVault] = getCollateralVaultPDA(marketId);
+
+            const { address: userTokenAccount, tokenProgramId, instruction: ataIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: market.collateralMint,
+                });
+
+            const amountBn = parseTokenAmount(amount, market.collateralDecimals);
+
+            if (action === 'deposit') {
+                const { positionPda, instruction: positionIx } = await ensurePositionIx({
+                    connection,
+                    program,
+                    marketId,
+                    market: marketKey,
+                    owner: wallet.publicKey,
+                    payer: wallet.publicKey,
+                });
+
+                const depositIx = await program.methods
+                    .supplyCollateral(marketIdArray, amountBn)
+                    .accounts({
+                        depositor: wallet.publicKey,
+                        protocolState,
+                        market: marketKey,
+                        position: positionPda,
+                        onBehalfOf: wallet.publicKey,
+                        depositorTokenAccount: userTokenAccount,
+                        collateralVault,
+                        collateralMint: market.collateralMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, positionIx, depositIx],
+                });
+
+                toast.success('Collateral deposited', {
+                    id: toastId,
+                    description: signature,
+                });
+            } else {
+                const [positionPda] = getPositionPDA(marketId, wallet.publicKey);
+                const withdrawIx = await program.methods
+                    .withdrawCollateral(marketIdArray, amountBn)
+                    .accounts({
+                        caller: wallet.publicKey,
+                        protocolState,
+                        market: marketKey,
+                        position: positionPda,
+                        authorization: null,
+                        oracle: market.oracle,
+                        receiverTokenAccount: userTokenAccount,
+                        collateralVault,
+                        collateralMint: market.collateralMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, withdrawIx],
+                });
+
+                toast.success('Collateral withdrawn', {
+                    id: toastId,
+                    description: signature,
+                });
+            }
+
+            setAmount('');
+        } catch (error) {
+            toast.error('Collateral transaction failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const handleWrapSol = async () => {
+        if (!wallet) return;
+        if (!amount) {
+            toast.error('Enter an amount to wrap');
+            return;
+        }
+
+        setWrapping(true);
+        const toastId = toast.loading('Wrapping SOL...');
+
+        try {
+            const lamportsBn = parseTokenAmount(amount, market.collateralDecimals);
+            let lamports: number;
+            try {
+                lamports = lamportsBn.toNumber();
+            } catch {
+                throw new Error('Amount too large');
+            }
+
+            const { instructions } = await buildWrapSolInstructions({
+                connection,
+                payer: wallet.publicKey,
+                owner: wallet.publicKey,
+                amountLamports: lamports,
+            });
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions,
+            });
+
+            toast.success('SOL wrapped', {
+                id: toastId,
+                description: signature,
+            });
+        } catch (error) {
+            toast.error('Wrap failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setWrapping(false);
+        }
+    };
 
     if (!connected) {
         return (
@@ -216,6 +652,15 @@ function CollateralTab() {
                 </AlertDescription>
             </Alert>
 
+            {!positionExists && action === 'deposit' && (
+                <Alert>
+                    <AlertTitle>Position Auto-Creation</AlertTitle>
+                    <AlertDescription>
+                        No position found for this market. A position will be created automatically on first deposit.
+                    </AlertDescription>
+                </Alert>
+            )}
+
             <div className="flex gap-2">
                 <Button variant={action === 'deposit' ? 'default' : 'outline'} onClick={() => setAction('deposit')} className="flex-1">
                     <TrendingUp className="w-4 h-4 mr-2" />Deposit
@@ -227,23 +672,129 @@ function CollateralTab() {
 
             <div>
                 <label className="text-sm font-medium">Amount</label>
+                <div className="text-xs text-muted-foreground mt-1">
+                    Collateral asset: <span className="font-mono">{formatMintShort(market.collateralMint)}</span>
+                </div>
                 <div className="flex gap-2 mt-1">
                     <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
                     <Button variant="outline">MAX</Button>
                 </div>
+                {isNativeCollateral && action === 'deposit' && (
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                        <Button variant="outline" onClick={handleWrapSol} disabled={!amount || wrapping}>
+                            <RefreshCcw className="w-4 h-4 mr-2" />
+                            {wrapping ? 'Wrapping...' : 'Wrap SOL'}
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                            Converts native SOL to wSOL for this amount.
+                        </span>
+                    </div>
+                )}
+                {!positionExists && action === 'withdraw' && (
+                    <div className="text-xs text-orange-600 mt-1">Create a position before withdrawing</div>
+                )}
             </div>
 
-            <Button onClick={() => alert(`${action} collateral...`)} className="w-full" disabled={!amount}>
+            <Button onClick={handleCollateral} className="w-full" disabled={!amount || submitting || (!positionExists && action === 'withdraw')}>
                 <Shield className="w-4 h-4 mr-2" />
-                {action === 'deposit' ? 'Deposit' : 'Withdraw'} Collateral
+                {submitting ? 'Submitting...' : action === 'deposit' ? 'Deposit' : 'Withdraw'} Collateral
             </Button>
         </div>
     );
 }
 
-function BorrowTab({ market }: { market: { lltv: number; totalBorrowAssets: bigint } }) {
+function BorrowTab({
+    market,
+    marketId,
+    marketKey,
+    positionExists,
+}: {
+    market: {
+        lltv: number;
+        loanMint: PublicKey;
+        loanDecimals: number;
+        oracle: PublicKey;
+        totalBorrowAssets: bigint;
+    };
+    marketId: Buffer;
+    marketKey: PublicKey;
+    positionExists: boolean;
+}) {
     const [amount, setAmount] = useState('');
+    const [submitting, setSubmitting] = useState(false);
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
+
+    const handleBorrow = async () => {
+        if (!wallet) return;
+        if (!amount) return;
+
+        setSubmitting(true);
+        const toastId = toast.loading('Submitting borrow...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketIdArray = Array.from(marketId);
+            const [protocolState] = getProtocolStatePDA();
+            const [loanVault] = getLoanVaultPDA(marketId);
+
+            const { address: receiverTokenAccount, tokenProgramId, instruction: ataIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: market.loanMint,
+                });
+
+            const { positionPda, instruction: positionIx } = await ensurePositionIx({
+                connection,
+                program,
+                marketId,
+                market: marketKey,
+                owner: wallet.publicKey,
+                payer: wallet.publicKey,
+            });
+
+            const assets = parseTokenAmount(amount, market.loanDecimals);
+            const maxShares = parseIntegerAmount('0');
+
+            const borrowIx = await program.methods
+                .borrow(marketIdArray, assets, maxShares)
+                .accounts({
+                    caller: wallet.publicKey,
+                    protocolState,
+                    market: marketKey,
+                    position: positionPda,
+                    authorization: null,
+                    oracle: market.oracle,
+                    receiverTokenAccount,
+                    loanVault,
+                    loanMint: market.loanMint,
+                    tokenProgram: tokenProgramId,
+                })
+                .instruction();
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions: [ataIx, positionIx, borrowIx],
+            });
+
+            toast.success('Borrow submitted', {
+                id: toastId,
+                description: signature,
+            });
+            setAmount('');
+        } catch (error) {
+            toast.error('Borrow failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
 
     if (!connected) {
         return (
@@ -270,11 +821,17 @@ function BorrowTab({ market }: { market: { lltv: number; totalBorrowAssets: bigi
 
             <div>
                 <label className="text-sm font-medium">Amount to Borrow</label>
+                <div className="text-xs text-muted-foreground mt-1">
+                    Loan asset: <span className="font-mono">{formatMintShort(market.loanMint)}</span>
+                </div>
                 <div className="flex gap-2 mt-1">
                     <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
                     <Button variant="outline">MAX</Button>
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">LLTV: {(market.lltv / 100).toFixed(0)}%</div>
+                {!positionExists && (
+                    <div className="text-xs text-orange-600 mt-1">A position will be created automatically on first borrow.</div>
+                )}
             </div>
 
             <Card className="bg-purple-50 border-purple-200 dark:bg-purple-950 dark:border-purple-800">
@@ -283,18 +840,101 @@ function BorrowTab({ market }: { market: { lltv: number; totalBorrowAssets: bigi
                 </CardContent>
             </Card>
 
-            <Button onClick={() => alert('Borrow pending...')} className="w-full" disabled={!amount}>
+            <Button onClick={handleBorrow} className="w-full" disabled={!amount || submitting}>
                 <TrendingDown className="w-4 h-4 mr-2" />
-                Borrow
+                {submitting ? 'Borrowing...' : 'Borrow'}
             </Button>
         </div>
     );
 }
 
-function RepayTab() {
+function RepayTab({
+    market,
+    marketId,
+    marketKey,
+    positionExists,
+}: {
+    market: {
+        loanMint: PublicKey;
+        loanDecimals: number;
+    };
+    marketId: Buffer;
+    marketKey: PublicKey;
+    positionExists: boolean;
+}) {
     const [mode, setMode] = useState<'assets' | 'shares'>('assets');
     const [amount, setAmount] = useState('');
+    const [submitting, setSubmitting] = useState(false);
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
+
+    const handleRepay = async () => {
+        if (!wallet) return;
+        if (!amount) return;
+        if (!positionExists) {
+            toast.error('No position found for this market');
+            return;
+        }
+
+        setSubmitting(true);
+        const toastId = toast.loading('Submitting repay...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketIdArray = Array.from(marketId);
+            const [loanVault] = getLoanVaultPDA(marketId);
+            const [positionPda] = getPositionPDA(marketId, wallet.publicKey);
+
+            const { address: repayerTokenAccount, tokenProgramId, instruction: ataIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: market.loanMint,
+                });
+
+            const assets = mode === 'assets'
+                ? parseTokenAmount(amount, market.loanDecimals)
+                : parseIntegerAmount('0');
+            const shares = mode === 'shares'
+                ? parseIntegerAmount(amount)
+                : parseIntegerAmount('0');
+
+            const repayIx = await program.methods
+                .repay(marketIdArray, assets, shares)
+                .accounts({
+                    repayer: wallet.publicKey,
+                    market: marketKey,
+                    position: positionPda,
+                    onBehalfOf: wallet.publicKey,
+                    repayerTokenAccount,
+                    loanVault,
+                    loanMint: market.loanMint,
+                    tokenProgram: tokenProgramId,
+                })
+                .instruction();
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions: [ataIx, repayIx],
+            });
+
+            toast.success('Repay submitted', {
+                id: toastId,
+                description: signature,
+            });
+            setAmount('');
+        } catch (error) {
+            toast.error('Repay failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
 
     if (!connected) {
         return (
@@ -320,26 +960,163 @@ function RepayTab() {
 
             <div>
                 <label className="text-sm font-medium">{mode === 'assets' ? 'Amount to Repay' : 'Shares to Burn'}</label>
+                <div className="text-xs text-muted-foreground mt-1">
+                    Loan asset: <span className="font-mono">{formatMintShort(market.loanMint)}</span>
+                </div>
                 <div className="flex gap-2 mt-1">
                     <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
                     <Button variant="outline">MAX</Button>
                 </div>
+                {!positionExists && (
+                    <div className="text-xs text-orange-600 mt-1">Create a position before repaying</div>
+                )}
             </div>
 
-            <Button onClick={() => alert('Repay pending...')} className="w-full" variant="outline" disabled={!amount}>
+            <Button onClick={handleRepay} className="w-full" variant="outline" disabled={!amount || submitting || !positionExists}>
                 <TrendingUp className="w-4 h-4 mr-2" />
-                Repay
+                {submitting ? 'Repaying...' : 'Repay'}
             </Button>
         </div>
     );
 }
 
-function FlashLoanTab({ market }: { market: { totalSupplyAssets: bigint; totalBorrowAssets: bigint } }) {
+function FlashLoanTab({
+    market,
+    marketId,
+    marketKey,
+}: {
+    market: {
+        totalSupplyAssets: bigint;
+        totalBorrowAssets: bigint;
+        loanMint: PublicKey;
+        loanDecimals: number;
+        flashLoanLock: number;
+    };
+    marketId: Buffer;
+    marketKey: PublicKey;
+}) {
     const [amount, setAmount] = useState('');
     const [mode, setMode] = useState<'single' | 'two-step'>('single');
+    const [submitting, setSubmitting] = useState(false);
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
 
-    const availableLiquidity = Number(market.totalSupplyAssets - market.totalBorrowAssets) / 1e6;
+    const loanScale = Math.pow(10, market.loanDecimals);
+    const availableLiquidity = Number(market.totalSupplyAssets - market.totalBorrowAssets) / loanScale;
+
+    const executeFlashLoan = async (type: 'single' | 'start' | 'end') => {
+        if (!wallet) return;
+        if (!amount) return;
+
+        setSubmitting(true);
+        const toastId = toast.loading(
+            type === 'single'
+                ? 'Submitting flash loan...'
+                : type === 'start'
+                ? 'Starting flash loan...'
+                : 'Ending flash loan...'
+        );
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketIdArray = Array.from(marketId);
+            const [protocolState] = getProtocolStatePDA();
+            const [loanVault] = getLoanVaultPDA(marketId);
+
+            const { address: borrowerTokenAccount, tokenProgramId, instruction: ataIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: market.loanMint,
+                });
+
+            const amountBn = parseTokenAmount(amount, market.loanDecimals);
+
+            if (type === 'single') {
+                const flashIx = await program.methods
+                    .flashLoan(marketIdArray, amountBn)
+                    .accounts({
+                        borrower: wallet.publicKey,
+                        protocolState,
+                        market: marketKey,
+                        borrowerTokenAccount,
+                        loanVault,
+                        loanMint: market.loanMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, flashIx],
+                });
+
+                toast.success('Flash loan submitted', {
+                    id: toastId,
+                    description: signature,
+                });
+            } else if (type === 'start') {
+                const startIx = await program.methods
+                    .flashLoanStart(marketIdArray, amountBn)
+                    .accounts({
+                        borrower: wallet.publicKey,
+                        protocolState,
+                        market: marketKey,
+                        borrowerTokenAccount,
+                        loanVault,
+                        loanMint: market.loanMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, startIx],
+                });
+
+                toast.success('Flash loan started', {
+                    id: toastId,
+                    description: signature,
+                });
+            } else {
+                const endIx = await program.methods
+                    .flashLoanEnd(marketIdArray, amountBn)
+                    .accounts({
+                        borrower: wallet.publicKey,
+                        market: marketKey,
+                        borrowerTokenAccount,
+                        loanVault,
+                        loanMint: market.loanMint,
+                        tokenProgram: tokenProgramId,
+                    })
+                    .instruction();
+
+                const signature = await sendInstructions({
+                    connection,
+                    wallet,
+                    instructions: [ataIx, endIx],
+                });
+
+                toast.success('Flash loan ended', {
+                    id: toastId,
+                    description: signature,
+                });
+            }
+
+            setAmount('');
+        } catch (error) {
+            toast.error('Flash loan failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
 
     if (!connected) {
         return (
@@ -364,7 +1141,8 @@ function FlashLoanTab({ market }: { market: { totalSupplyAssets: bigint; totalBo
                 <AlertTriangle className="h-4 w-4" />
                 <AlertTitle>Flash Loan Warning</AlertTitle>
                 <AlertDescription>
-                    During a flash loan, the market is LOCKED. Repay within the same transaction.
+                    Single-instruction flash loans require a custom program to repay within the same instruction.
+                    Use the two-step flow for manual testing.
                 </AlertDescription>
             </Alert>
 
@@ -375,6 +1153,9 @@ function FlashLoanTab({ market }: { market: { totalSupplyAssets: bigint; totalBo
 
             <div>
                 <label className="text-sm font-medium">Flash Loan Amount</label>
+                <div className="text-xs text-muted-foreground mt-1">
+                    Loan asset: <span className="font-mono">{formatMintShort(market.loanMint)}</span>
+                </div>
                 <div className="flex gap-2 mt-1">
                     <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
                     <Button variant="outline" onClick={() => setAmount(availableLiquidity.toFixed(2))}>MAX</Button>
@@ -397,10 +1178,23 @@ function FlashLoanTab({ market }: { market: { totalSupplyAssets: bigint; totalBo
                 </CardContent>
             </Card>
 
-            <Button onClick={() => alert('Flash loan pending...')} className="w-full" disabled={!amount}>
-                <Zap className="w-4 h-4 mr-2" />
-                {mode === 'single' ? 'Execute Flash Loan' : 'Start Flash Loan'}
-            </Button>
+            {mode === 'single' ? (
+                <Button onClick={() => executeFlashLoan('single')} className="w-full" disabled={!amount || submitting}>
+                    <Zap className="w-4 h-4 mr-2" />
+                    {submitting ? 'Submitting...' : 'Execute Flash Loan'}
+                </Button>
+            ) : (
+                <div className="grid gap-2">
+                    <Button onClick={() => executeFlashLoan('start')} className="w-full" disabled={!amount || submitting}>
+                        <Zap className="w-4 h-4 mr-2" />
+                        {submitting ? 'Submitting...' : 'Start Flash Loan'}
+                    </Button>
+                    <Button onClick={() => executeFlashLoan('end')} className="w-full" variant="outline" disabled={!amount || submitting || market.flashLoanLock === 0}>
+                        <Zap className="w-4 h-4 mr-2" />
+                        {market.flashLoanLock === 0 ? 'End Flash Loan (Start First)' : submitting ? 'Submitting...' : 'End Flash Loan'}
+                    </Button>
+                </div>
+            )}
         </div>
     );
 }
@@ -408,8 +1202,11 @@ function FlashLoanTab({ market }: { market: { totalSupplyAssets: bigint; totalBo
 export default function MarketDetailPage() {
     const params = useParams();
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
     const { data: markets, isLoading } = useMarkets();
     const { data: positions } = useUserPositions();
+    const [creatingPosition, setCreatingPosition] = useState(false);
 
     const marketId = params.marketId as string;
 
@@ -419,7 +1216,7 @@ export default function MarketDetailPage() {
     // Find user position for this market
     const position = positions?.find(p => {
         const idHex = Buffer.from(p.account.marketId).toString('hex');
-        const marketIdHex = market ? Buffer.from(market.account.id).toString('hex') : '';
+        const marketIdHex = market ? Buffer.from(market.account.marketId).toString('hex') : '';
         return idHex === marketIdHex;
     });
 
@@ -439,8 +1236,53 @@ export default function MarketDetailPage() {
         return <MarketNotFound />;
     }
 
-    const totalSupply = Number(market.account.totalSupplyAssets) / 1e6;
-    const totalBorrow = Number(market.account.totalBorrowAssets) / 1e6;
+    const marketIdBuffer = Buffer.from(market.account.marketId);
+    const positionExists = !!position;
+
+    const handleCreatePosition = async () => {
+        if (!wallet) return;
+        setCreatingPosition(true);
+        const toastId = toast.loading('Creating position...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const { positionPda, instruction: positionIx } = await ensurePositionIx({
+                connection,
+                program,
+                marketId: marketIdBuffer,
+                market: market.publicKey,
+                owner: wallet.publicKey,
+                payer: wallet.publicKey,
+            });
+
+            if (!positionIx) {
+                toast.info('Position already exists', { id: toastId });
+                return;
+            }
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions: [positionIx],
+            });
+
+            toast.success('Position created', {
+                id: toastId,
+                description: signature,
+            });
+        } catch (error) {
+            toast.error('Position creation failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setCreatingPosition(false);
+        }
+    };
+
+    const loanScale = Math.pow(10, market.account.loanDecimals);
+    const totalSupply = Number(market.account.totalSupplyAssets) / loanScale;
+    const totalBorrow = Number(market.account.totalBorrowAssets) / loanScale;
     const utilization = totalSupply > 0 ? (totalBorrow / totalSupply) * 100 : 0;
     const lltv = market.account.lltv / 100;
 
@@ -475,6 +1317,16 @@ export default function MarketDetailPage() {
                             {market.account.paused && <Badge variant="destructive"><Lock className="w-3 h-3 mr-1" />Paused</Badge>}
                         </CardHeader>
                         <CardContent className="space-y-4">
+                            <div className="grid gap-2 text-xs text-muted-foreground">
+                                <div className="flex justify-between">
+                                    <span>Collateral Mint</span>
+                                    <span className="font-mono">{formatMintShort(market.account.collateralMint)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Loan Mint</span>
+                                    <span className="font-mono">{formatMintShort(market.account.loanMint)}</span>
+                                </div>
+                            </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <p className="text-sm text-muted-foreground">Total Supply</p>
@@ -535,6 +1387,13 @@ export default function MarketDetailPage() {
                             <CardContent className="py-8 text-center">
                                 <p className="text-muted-foreground">No position in this market</p>
                                 <p className="text-sm text-muted-foreground mt-2">Supply or deposit collateral to start</p>
+                                <Button
+                                    className="mt-4"
+                                    onClick={handleCreatePosition}
+                                    disabled={creatingPosition || !wallet}
+                                >
+                                    {creatingPosition ? 'Creating...' : 'Create Position'}
+                                </Button>
                             </CardContent>
                         </Card>
                     )}
@@ -554,12 +1413,53 @@ export default function MarketDetailPage() {
                                     <TabsTrigger value="flash">Flash</TabsTrigger>
                                 </TabsList>
                                 <div className="mt-6">
-                                    <TabsContent value="supply"><SupplyTab market={market.account} /></TabsContent>
-                                    <TabsContent value="withdraw"><WithdrawTab /></TabsContent>
-                                    <TabsContent value="collateral"><CollateralTab /></TabsContent>
-                                    <TabsContent value="borrow"><BorrowTab market={market.account} /></TabsContent>
-                                    <TabsContent value="repay"><RepayTab /></TabsContent>
-                                    <TabsContent value="flash"><FlashLoanTab market={market.account} /></TabsContent>
+                                    <TabsContent value="supply">
+                                        <SupplyTab
+                                            market={market.account}
+                                            marketId={marketIdBuffer}
+                                            marketKey={market.publicKey}
+                                            positionExists={positionExists}
+                                        />
+                                    </TabsContent>
+                                    <TabsContent value="withdraw">
+                                        <WithdrawTab
+                                            market={market.account}
+                                            marketId={marketIdBuffer}
+                                            marketKey={market.publicKey}
+                                            positionExists={positionExists}
+                                        />
+                                    </TabsContent>
+                                    <TabsContent value="collateral">
+                                        <CollateralTab
+                                            market={market.account}
+                                            marketId={marketIdBuffer}
+                                            marketKey={market.publicKey}
+                                            positionExists={positionExists}
+                                        />
+                                    </TabsContent>
+                                    <TabsContent value="borrow">
+                                        <BorrowTab
+                                            market={market.account}
+                                            marketId={marketIdBuffer}
+                                            marketKey={market.publicKey}
+                                            positionExists={positionExists}
+                                        />
+                                    </TabsContent>
+                                    <TabsContent value="repay">
+                                        <RepayTab
+                                            market={market.account}
+                                            marketId={marketIdBuffer}
+                                            marketKey={market.publicKey}
+                                            positionExists={positionExists}
+                                        />
+                                    </TabsContent>
+                                    <TabsContent value="flash">
+                                        <FlashLoanTab
+                                            market={market.account}
+                                            marketId={marketIdBuffer}
+                                            marketKey={market.publicKey}
+                                        />
+                                    </TabsContent>
                                 </div>
                             </Tabs>
                         </CardContent>

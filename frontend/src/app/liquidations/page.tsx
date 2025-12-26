@@ -7,10 +7,18 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAnchorWallet, useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { useLiquidatablePositions, useMarkets, OnChainPosition } from '@/lib/hooks/useOnChainData';
 import { useState } from 'react';
+import { toast } from 'sonner';
+import {
+    getCollateralVaultPDA,
+    getLoanVaultPDA,
+    getMorphoProgram,
+    getPositionPDA,
+} from '@/lib/anchor/client';
+import { getOrCreateAtaIx, parseTokenAmount, sendInstructions } from '@/lib/anchor/transactions';
 import {
     TrendingDown,
     DollarSign,
@@ -39,11 +47,94 @@ function EmptyLiquidationsState() {
 
 export default function LiquidationsPage() {
     const { connected } = useWallet();
+    const wallet = useAnchorWallet();
+    const { connection } = useConnection();
     const { data: positions, isLoading } = useLiquidatablePositions();
     const { data: markets } = useMarkets();
     const [search, setSearch] = useState('');
     const [selectedPos, setSelectedPos] = useState<OnChainPosition | null>(null);
     const [seizedAmount, setSeizedAmount] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+
+    const selectedMarket = selectedPos
+        ? markets?.find((market) => {
+            const marketIdHex = Buffer.from(market.account.marketId).toString('hex');
+            const posMarketIdHex = Buffer.from(selectedPos.account.marketId).toString('hex');
+            return marketIdHex === posMarketIdHex;
+        })
+        : undefined;
+
+    const handleLiquidation = async () => {
+        if (!wallet || !selectedPos || !selectedMarket || !seizedAmount) return;
+
+        setSubmitting(true);
+        const toastId = toast.loading('Submitting liquidation...');
+
+        try {
+            const program = getMorphoProgram(connection, wallet);
+            const marketId = Buffer.from(selectedMarket.account.marketId);
+            const marketIdArray = Array.from(marketId);
+            const [loanVault] = getLoanVaultPDA(marketId);
+            const [collateralVault] = getCollateralVaultPDA(marketId);
+            const [borrowerPosition] = getPositionPDA(marketId, selectedPos.account.owner);
+
+            const { address: liquidatorLoanAccount, tokenProgramId: loanTokenProgram, instruction: loanAtaIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: selectedMarket.account.loanMint,
+                });
+
+            const { address: liquidatorCollateralAccount, tokenProgramId: collateralTokenProgram, instruction: collateralAtaIx } =
+                await getOrCreateAtaIx({
+                    connection,
+                    payer: wallet.publicKey,
+                    owner: wallet.publicKey,
+                    mint: selectedMarket.account.collateralMint,
+                });
+
+            if (!loanTokenProgram.equals(collateralTokenProgram)) {
+                throw new Error('Loan and collateral mints use different token programs');
+            }
+
+            const seizedAssets = parseTokenAmount(seizedAmount, selectedMarket.account.loanDecimals);
+
+            const liquidateIx = await program.methods
+                .liquidate(marketIdArray, seizedAssets)
+                .accounts({
+                    liquidator: wallet.publicKey,
+                    market: selectedMarket.publicKey,
+                    borrowerPosition,
+                    borrower: selectedPos.account.owner,
+                    oracle: selectedMarket.account.oracle,
+                    liquidatorLoanAccount,
+                    liquidatorCollateralAccount,
+                    loanVault,
+                    collateralVault,
+                    loanMint: selectedMarket.account.loanMint,
+                    collateralMint: selectedMarket.account.collateralMint,
+                    tokenProgram: loanTokenProgram,
+                })
+                .instruction();
+
+            const signature = await sendInstructions({
+                connection,
+                wallet,
+                instructions: [loanAtaIx, collateralAtaIx, liquidateIx],
+            });
+
+            toast.success('Liquidation submitted', { id: toastId, description: signature });
+            setSeizedAmount('');
+        } catch (error) {
+            toast.error('Liquidation failed', {
+                id: toastId,
+                description: error instanceof Error ? error.message : 'Unknown error',
+            });
+        } finally {
+            setSubmitting(false);
+        }
+    };
 
     if (!connected) {
         return (
@@ -237,6 +328,15 @@ export default function LiquidationsPage() {
                                             Health factor calculation requires oracle price data.
                                         </AlertDescription>
                                     </Alert>
+                                    {!selectedMarket && (
+                                        <Alert variant="destructive">
+                                            <AlertCircle className="h-4 w-4" />
+                                            <AlertTitle>Market Not Found</AlertTitle>
+                                            <AlertDescription>
+                                                Unable to match this position to a market. Refresh or try again later.
+                                            </AlertDescription>
+                                        </Alert>
+                                    )}
 
                                     <div>
                                         <label className="text-sm font-medium">Amount to Seize</label>
@@ -251,9 +351,14 @@ export default function LiquidationsPage() {
                                         </div>
                                     </div>
 
-                                    <Button className="w-full" variant="destructive" disabled={!seizedAmount}>
+                                    <Button
+                                        className="w-full"
+                                        variant="destructive"
+                                        disabled={!seizedAmount || !selectedMarket || submitting}
+                                        onClick={handleLiquidation}
+                                    >
                                         <Zap className="w-4 h-4 mr-2" />
-                                        Execute Liquidation
+                                        {submitting ? 'Submitting...' : 'Execute Liquidation'}
                                     </Button>
                                 </>
                             ) : (

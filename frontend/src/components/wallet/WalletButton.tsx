@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Badge } from '@/components/ui/badge';
@@ -7,6 +8,19 @@ import { CheckCircle } from 'lucide-react';
 
 export function WalletButton() {
     const { connected } = useWallet();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+        setMounted(true);
+    }, []);
+
+    if (!mounted) {
+        return (
+            <div className="flex items-center gap-2">
+                <div className="h-10 w-28 rounded-md bg-secondary" />
+            </div>
+        );
+    }
 
     return (
         <div className="flex items-center gap-2">
